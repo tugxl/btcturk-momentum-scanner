@@ -1,10 +1,12 @@
-name: BtcTurk Scanner Test
+name: BtcTurk Momentum Scanner
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
 
 jobs:
-  scanner-test:
+  scanner:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -31,7 +33,7 @@ jobs:
           restore-keys: |
             btcturk-scanner-history-
 
-      - name: Run one BtcTurk scan
+      - name: Run BtcTurk scan
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
