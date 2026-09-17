@@ -1,0 +1,32 @@
+scan_interval: 60
+request_interval: 0.35
+timeout: 15
+retries: 3
+workers: 4
+history_hours: 24
+top: 20
+alert_threshold: 80
+reset_threshold: 70
+early_watch_threshold: 70
+watch_reset_threshold: 65
+watch_cooldown_seconds: 900
+score_rise_5m: 5
+score_rise_15m: 10
+volume_trend_min: 0.2
+rs_trend_min: 0.3
+history_tolerance_seconds: 180
+history_max_gap_seconds: 600
+history_retention_days: 7
+max_spread_pct: 0.5
+min_depth_try: 100000
+max_1h_pct: 8
+max_4h_pct: 15
+max_extension_pct: 5
+max_breakout_extension_pct: 4
+weights:
+  momentum: 20
+  volume: 20
+  relative_strength: 20
+  structure: 15
+  liquidity: 15
+  early: 10
