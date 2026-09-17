@@ -23,8 +23,23 @@ jobs:
           pip install -r requirements.txt
           pip install python-dotenv
 
+      - name: Restore scanner history
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: btcturk-scanner-history-${{ github.run_id }}
+          restore-keys: |
+            btcturk-scanner-history-
+
       - name: Run one BtcTurk scan
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python main.py --once
+
+      - name: Save scanner history
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: btcturk-scanner-history-${{ github.run_id }}
