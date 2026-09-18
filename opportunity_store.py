@@ -6,8 +6,9 @@ from pathlib import Path
 
 class OpportunityStore:
     def __init__(self, path):
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        self.db=sqlite3.connect(path)
+        self.path=Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.db=sqlite3.connect(self.path)
         self.db.row_factory=sqlite3.Row
         self.db.execute('PRAGMA journal_mode=WAL')
         self.db.executescript('''
@@ -30,7 +31,24 @@ class OpportunityStore:
         CREATE TABLE IF NOT EXISTS shadow_notifications (
           symbol TEXT PRIMARY KEY, last_alert REAL NOT NULL, opportunity_score REAL NOT NULL,
           net_expectancy REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS shadow_health (
+          id INTEGER PRIMARY KEY, timestamp REAL NOT NULL, duration REAL NOT NULL,
+          discovered_pairs INTEGER NOT NULL, successful_pairs INTEGER NOT NULL,
+          failed_pairs INTEGER NOT NULL, stale_pairs INTEGER NOT NULL,
+          stale_order_books INTEGER NOT NULL DEFAULT 0,
+          snapshots_written INTEGER NOT NULL, api_requests INTEGER NOT NULL,
+          api_errors INTEGER NOT NULL, api_retries INTEGER NOT NULL,
+          response_bytes INTEGER NOT NULL, db_errors INTEGER NOT NULL,
+          label_updates INTEGER NOT NULL, db_size_bytes INTEGER NOT NULL,
+          cpu_seconds REAL NOT NULL, cpu_percent REAL NOT NULL, memory_mb REAL,
+          status TEXT NOT NULL, error TEXT);
+        CREATE INDEX IF NOT EXISTS shadow_health_time ON shadow_health(timestamp);
+        CREATE TABLE IF NOT EXISTS shadow_metadata (
+          key TEXT PRIMARY KEY, value TEXT NOT NULL);
         ''')
+        health_columns={row['name'] for row in self.db.execute('PRAGMA table_info(shadow_health)')}
+        if 'stale_order_books' not in health_columns:
+            self.db.execute('ALTER TABLE shadow_health ADD COLUMN stale_order_books INTEGER NOT NULL DEFAULT 0')
         self.db.commit()
 
     def save_bars(self, raw_rows):
@@ -41,12 +59,15 @@ class OpportunityStore:
                                     (symbol,candle.t+60,candle.o,candle.h,candle.l,candle.c,candle.v))
 
     def save_features(self, timestamp, feature_rows):
+        written=0
         with self.db:
             for row in feature_rows:
-                self.db.execute('''INSERT OR REPLACE INTO feature_snapshots
+                cursor=self.db.execute('''INSERT OR REPLACE INTO feature_snapshots
                     (timestamp,symbol,price,features,regime,safety_pass) VALUES (?,?,?,?,?,?)''',
                     (timestamp,row['symbol'],row['price'],json.dumps(row['features'],allow_nan=False),
                      row['regime'],int(row['safety_pass'])))
+                written += max(0,cursor.rowcount)
+        return written
 
     def pending_labels(self, cutoff):
         return self.db.execute('''SELECT f.* FROM feature_snapshots f
@@ -64,7 +85,77 @@ class OpportunityStore:
 
     def prune_bars(self, cutoff):
         with self.db:
-            self.db.execute('DELETE FROM market_bars WHERE timestamp<?',(cutoff,))
+            return self.db.execute('DELETE FROM market_bars WHERE timestamp<?',(cutoff,)).rowcount
+
+    def db_size_bytes(self):
+        return sum(path.stat().st_size for path in (self.path,Path(str(self.path)+'-wal'),Path(str(self.path)+'-shm'))
+                   if path.exists())
+
+    def save_health(self, metrics):
+        columns=('timestamp','duration','discovered_pairs','successful_pairs','failed_pairs','stale_pairs','stale_order_books',
+                 'snapshots_written','api_requests','api_errors','api_retries','response_bytes','db_errors',
+                 'label_updates','db_size_bytes','cpu_seconds','cpu_percent','memory_mb','status','error')
+        with self.db:
+            self.db.execute(f"INSERT INTO shadow_health ({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})",
+                            tuple(metrics.get(key) for key in columns))
+
+    def metadata(self, key, default=None):
+        row=self.db.execute('SELECT value FROM shadow_metadata WHERE key=?',(key,)).fetchone()
+        return json.loads(row['value']) if row else default
+
+    def set_metadata(self, key, value):
+        with self.db:
+            self.db.execute('INSERT OR REPLACE INTO shadow_metadata VALUES (?,?)',(key,json.dumps(value)))
+
+    def dataset_stats(self):
+        feature=self.db.execute('''SELECT COUNT(*) rows,COUNT(DISTINCT timestamp) scans,
+            MIN(timestamp) first_at,MAX(timestamp) last_at,COUNT(DISTINCT symbol) pairs
+            FROM feature_snapshots''').fetchone()
+        label_counts=self.db.execute('''SELECT COUNT(*) total,
+            SUM(CASE WHEN labels LIKE '%"status": "UNAVAILABLE"%' THEN 1 ELSE 0 END) unavailable
+            FROM forward_labels''').fetchone()
+        unavailable=label_counts['unavailable'] or 0
+        completed=label_counts['total']-unavailable
+        days=0
+        if feature['first_at'] is not None:
+            days=len(self.db.execute("SELECT DISTINCT date(timestamp,'unixepoch') FROM feature_snapshots").fetchall())
+        return dict(feature_rows=feature['rows'],unique_scan_timestamps=feature['scans'],
+                    first_at=feature['first_at'],last_at=feature['last_at'],active_pairs=feature['pairs'],
+                    completed_labels=completed,unavailable_labels=unavailable,calendar_days=days)
+
+    def health_rows(self, since=0):
+        return self.db.execute('SELECT * FROM shadow_health WHERE timestamp>=? ORDER BY timestamp',(since,)).fetchall()
+
+    def quality_counts(self, now, expected_interval, retention_days):
+        window_start=now-86400
+        duplicates=self.db.execute('''SELECT COUNT(*) n FROM (SELECT symbol,timestamp,COUNT(*) c
+            FROM feature_snapshots WHERE timestamp>=? GROUP BY symbol,timestamp HAVING c>1)''',(window_start,)).fetchone()['n']
+        invalid_prices=self.db.execute('''SELECT COUNT(*) n FROM feature_snapshots
+            WHERE timestamp>=? AND (price<=0 OR price!=price)''',(window_start,)).fetchone()['n']
+        timestamps=[r['timestamp'] for r in self.db.execute(
+            'SELECT DISTINCT timestamp FROM feature_snapshots WHERE timestamp>=? ORDER BY timestamp',(window_start,)).fetchall()]
+        gaps=[b-a for a,b in zip(timestamps,timestamps[1:])]
+        feature_rows=self.db.execute('SELECT features FROM feature_snapshots WHERE timestamp>=?',(window_start,)).fetchall()
+        values=missing=0
+        for row in feature_rows:
+            for value in json.loads(row['features']).values():
+                if isinstance(value,(int,float)) or value is None:
+                    values += 1
+                    missing += int(value is None)
+        eligible=self.db.execute('SELECT COUNT(*) n FROM feature_snapshots WHERE timestamp<=?',(now-150*60,)).fetchone()['n']
+        labelled=self.db.execute('''SELECT COUNT(*) n FROM forward_labels l JOIN feature_snapshots f ON f.id=l.snapshot_id
+            WHERE f.timestamp<=? AND l.labels NOT LIKE '%"status": "UNAVAILABLE"%' ''',(now-150*60,)).fetchone()['n']
+        bar_gaps=self.db.execute('''SELECT COUNT(*) n FROM (
+            SELECT timestamp-LAG(timestamp) OVER (PARTITION BY symbol ORDER BY timestamp) gap
+            FROM market_bars WHERE timestamp>=?) WHERE gap>90''',(now-retention_days*86400,)).fetchone()['n']
+        old_bars=self.db.execute('SELECT COUNT(*) n FROM market_bars WHERE timestamp<?',
+                                 (now-retention_days*86400-120,)).fetchone()['n']
+        unavailable=self.dataset_stats()['unavailable_labels']
+        return dict(duplicate_timestamps=duplicates,invalid_prices=invalid_prices,
+                    max_timestamp_gap=max(gaps,default=0),feature_nan_rate=missing/values if values else 0,
+                    label_completion_rate=labelled/eligible if eligible else 1.,missing_bars=unavailable+bar_gaps,
+                    stale_order_books=sum(r['stale_order_books'] for r in self.health_rows(now-86400)),
+                    raw_bars_past_retention=old_bars,expected_interval=expected_interval)
 
     def labelled_rows(self):
         rows=self.db.execute('''SELECT f.timestamp,f.symbol,f.price,f.features,f.regime,l.labels

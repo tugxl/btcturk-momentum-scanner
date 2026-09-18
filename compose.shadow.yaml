@@ -1,0 +1,27 @@
+services:
+  v3-shadow:
+    build:
+      context: .
+      dockerfile: Dockerfile.shadow
+    command: ["python", "scanner.py", "--shadow-watch"]
+    restart: unless-stopped
+    environment:
+      SCANNER_V3_DATA_DIR: /data/v3
+      V3_TELEGRAM_BOT_TOKEN: ${V3_TELEGRAM_BOT_TOKEN:-}
+      V3_TELEGRAM_CHAT_ID: ${V3_TELEGRAM_CHAT_ID:-}
+    volumes:
+      - type: bind
+        source: ${V3_DATA_HOST_PATH:?set V3_DATA_HOST_PATH to a persistent disk directory}
+        target: /data/v3
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m
+    # A full-universe scan can exceed three minutes; let SIGTERM finish the active transaction.
+    stop_grace_period: 5m
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          memory: 128M

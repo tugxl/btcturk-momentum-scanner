@@ -75,7 +75,7 @@ python scanner.py --performance-report
 python scanner.py --approve-model
 ```
 
-`--live-ranking` and `--shadow-watch` collect current public market features and one-minute bars, complete labels that have reached 120 minutes, and load only an explicitly approved model. Until an approved model exists, the only predictive output is:
+`--shadow-watch` is a data-only process: it collects current public market features and one-minute bars, completes labels that have reached 120 minutes, writes operational health metrics, and never loads or trains a model. It emits no opportunity/ranking notifications. `--live-ranking` remains the separate, manually invoked inference path. Until an approved model exists, its only predictive output is:
 
 ```text
 MODEL NOT READY
@@ -83,6 +83,14 @@ NO TRADE
 ```
 
 No placeholder prediction, probability, expectancy, or confidence is generated.
+
+### 24/7 shadow deployment
+
+Build `Dockerfile.shadow` as a separate worker from the existing V1 image. The worker command is exactly `python scanner.py --shadow-watch`; scans are synchronous, so a scan that takes longer than 180 seconds delays the next start instead of overlapping. SIGTERM/SIGINT stop the loop cleanly. Public API calls use global rate limiting and bounded exponential backoff.
+
+`SCANNER_V3_DATA_DIR` must be mounted from storage that survives container replacement and redeployment. `compose.shadow.yaml` intentionally refuses to start unless `V3_DATA_HOST_PATH` is explicitly set to such a directory. Do not deploy on an ephemeral filesystem. The process uses separate optional `V3_TELEGRAM_BOT_TOKEN` and `V3_TELEGRAM_CHAT_ID` variables and never reads V1 Telegram credentials.
+
+Each scan records coverage, duration, snapshot/label writes, API errors/retries/bytes, DB errors/size, CPU time and resident memory. Daily reporting includes readiness and data quality. Readiness is informational only: at 5,000 completed labels, 200 scan timestamps and seven calendar days, the worker sends `V3 DATASET READY FOR TRAINING` once but does not train anything. Eight-day retention applies only to raw one-minute bars; features and labels are retained.
 
 ### Data and labels
 
