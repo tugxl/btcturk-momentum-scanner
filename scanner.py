@@ -76,6 +76,9 @@ def collect_shadow_once(market,score_state,store,cfg,reporter):
         feature_rows=build_feature_rows(rows)
         store.save_bars(raw)
         snapshots=store.save_features(observed_at,feature_rows)
+        # Send heuristic momentum alerts immediately; V3 model training remains
+        # separate and cannot turn these WATCH/ACTION alerts into ML claims.
+        reporter.momentum_alerts(rows,observed_at)
         labels=label_pending(store,observed_at)
         store.prune_bars(observed_at-cfg.raw_bar_retention_days*86400)
     except sqlite3.Error as exc:
