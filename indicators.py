@@ -1,6 +1,6 @@
 """Indicators use completed, contiguous five-minute BtcTurk candles only."""
 from dataclasses import dataclass
-from statistics import mean, median
+from statistics import mean, median, pstdev
 import math
 
 
@@ -99,7 +99,8 @@ def metrics(candles, minute_candles=None):
         return {}
     c = candles
     micro = minute_candles or []
-    out = {'r1': pct(micro[-1].c, micro[-2].c) if len(micro) >= 2 else None}
+    out = {'r1': pct(micro[-1].c, micro[-2].c) if len(micro) >= 2 else None,
+           'r3': pct(micro[-1].c, micro[-4].c) if len(micro) >= 4 else None}
     out.update({f'r{m}': pct(c[-1].c, c[-1-m//5].c) if len(c) > m//5 else None for m in (5, 15, 30, 60, 240)})
     if len(c) >= 27:
         baseline = mean(x.v for x in c[-27:-3])
@@ -131,14 +132,21 @@ def metrics(candles, minute_candles=None):
     recent_atrs = [x for x in recent_atrs if x is not None]
     baseline_atrs = [x for x in baseline_atrs if x is not None]
     prior_high = max((x.h for x in c[-13:-1]), default=None)
+    prior_volumes=[x.v for x in c[-13:-1]]
+    prior_volume=mean(prior_volumes) if prior_volumes else None
+    log_returns=[100*math.log(b.c/a.c) for a,b in zip(c[-13:-1],c[-12:]) if a.c>0 and b.c>0]
+    breakout_distance=pct(c[-1].c, prior_high) if prior_high else None
     out.update(vwap=vwap, extension=pct(c[-1].c, vwap), ema9=ema9, ema21=ema21,
                price_vs_ema9=pct(c[-1].c, ema9), price_vs_ema21=pct(c[-1].c, ema21),
                ema9_slope=pct(ema9, ema9_old) if ema9_old else None,
                ema21_slope=pct(ema21, ema21_old) if ema21_old else None,
+               ema_separation=pct(ema9, ema21) if ema9 and ema21 else None,
                rsi=rsi, rsi_delta=(rsi-rsi_old) if rsi is not None and rsi_old is not None else None,
-               atr_pct=(atr/c[-1].c*100) if atr else None,
+               atr=atr, atr_pct=(atr/c[-1].c*100) if atr else None,
                atr_expansion=mean(recent_atrs)/mean(baseline_atrs) if recent_atrs and baseline_atrs and mean(baseline_atrs) else None,
+               realized_volatility=pstdev(log_returns) if len(log_returns)>1 else None,
                spike=max(pct(x.h, x.o) for x in c[-3:]), drawdown=pct(c[-1].c, max(x.h for x in c[-48:])),
                local_high=local_high, distance_local_high=pct(c[-1].c, local_high),
-               breakout_distance=pct(c[-1].c, prior_high) if prior_high else None)
+               breakout_distance=breakout_distance,
+               breakout_strength=max(0.,breakout_distance or 0.)*(c[-1].v/prior_volume if prior_volume else 0.))
     return out

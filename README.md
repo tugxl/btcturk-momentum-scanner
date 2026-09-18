@@ -61,3 +61,45 @@ python -m unittest discover -s tests -v
 The test suite covers candle validation, expanded indicators, scoring and chase penalties, score velocity, safety-only hard filtering, three-stage classification, notification dedup/cooldowns, hourly summaries, diagnostic output, public API retries, persistence, and the full market-data pipeline.
 
 Positive expectancy is not assumed. Evaluate it with forward returns (for example +30m, +60m, +120m), drawdown, precision by class/score bucket, and walk-forward samples before changing thresholds or using reports operationally.
+
+## V3 shadow opportunity pipeline
+
+V3 is deliberately separate from `main.py --watch`; the V2/production notification path remains unchanged. It stores its data under `SCANNER_V3_DATA_DIR` (default `data/v3`) and never calls a private trading endpoint.
+
+```powershell
+python scanner.py --live-ranking
+python scanner.py --shadow-watch
+python scanner.py --train-model
+python scanner.py --performance-report
+# Explicit human action only, after reviewing candidate walk-forward results:
+python scanner.py --approve-model
+```
+
+`--live-ranking` and `--shadow-watch` collect current public market features and one-minute bars, complete labels that have reached 120 minutes, and load only an explicitly approved model. Until an approved model exists, the only predictive output is:
+
+```text
+MODEL NOT READY
+NO TRADE
+```
+
+No placeholder prediction, probability, expectancy, or confidence is generated.
+
+### Data and labels
+
+`feature_snapshots` stores current-only features without using the symbol as a model input: 1m/3m/5m/15m/30m/60m momentum, volume and optional trade-count acceleration, VWAP/EMA/RSI/ATR/realized-volatility values, breakout/local-high structure, order-book state, BTC returns and relative strength, market breadth, regime, V2 score/velocity/components, and chase penalties. `market_bars` retains eight days of deduplicated one-minute OHLCV for path labels; feature snapshots and completed labels remain available for training.
+
+Labels include 15m/30m/60m/90m/120m returns, MFE and MAE at 30m/60m/120m, the requested seven TP-before-SL pairs, and all 150 TP × SL × max-hold plans. If a candle touches TP and SL, the classifier label is excluded as ambiguous and plan P&L uses the conservative stop outcome.
+
+### Offline model lifecycle
+
+Training requires at least 5,000 labelled observations, 200 distinct scan timestamps, and seven elapsed history days. Timestamp groups are kept intact. Every validation fold satisfies `max(train timestamp) < min(test timestamp)`; random train/test splitting is not used.
+
+For continuous targets, ridge regression is compared with histogram gradient boosting. For probability targets, logistic regression is compared with histogram gradient boosting classification. Selection uses walk-forward MAE or Brier score with a false-positive penalty, not accuracy. The bundle retains alternate-model predictions for disagreement checks and calibration/residual diagnostics.
+
+Training writes only `model_candidate.joblib`. When an approved model already exists, a new candidate is marked promotable only after at least a 5% aggregate out-of-sample objective improvement; otherwise it is marked rejected. Training never overwrites `model_production.joblib`. `--approve-model` is the separate human-operated promotion step.
+
+### NO TRADE and cost model
+
+Gross 60-minute return is reduced by the current spread, two configured slippage legs, and two configured fee legs. A shadow opportunity additionally requires fresh/liquid data, minimum similar and regime samples, net expectancy and TP-probability thresholds, at least MEDIUM confidence, acceptable model agreement, a non-stale approved model, a sufficiently sampled trade plan, and no severe chase penalty. Failing any check yields `NO TRADE` plus the closest rejected candidates and reasons.
+
+Position sizing is informational only. It is disabled when `trading_bankroll_try` is zero, always disabled for LOW confidence, and capped by both confidence-specific bankroll percentages and the configured maximum loss per trade. No order submission code exists.
