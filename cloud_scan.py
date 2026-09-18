@@ -1,5 +1,4 @@
 import hashlib
-import json
 import os
 import sqlite3
 import subprocess
@@ -12,8 +11,8 @@ from telegram_notifier import send_telegram
 DATA_DIR = os.getenv("SCANNER_DATA_DIR", "data")
 ALERT_DB = os.path.join(DATA_DIR, "cloud_alerts.sqlite3")
 
-# Aynı candidate için tekrar bildirim süresi
-COOLDOWN_SECONDS = 60 * 60  # 1 saat
+COOLDOWN_SECONDS = 60 * 60
+HEARTBEAT_SECONDS = 60 * 60
 
 
 def init_db():
@@ -29,12 +28,18 @@ def init_db():
         )
     """)
 
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS system_state (
+            key TEXT PRIMARY KEY,
+            value REAL
+        )
+    """)
+
     conn.commit()
     return conn
 
 
 def candidate_key(candidate):
-    # Coin sembolünü candidate metninden bul.
     symbol = "UNKNOWN"
 
     for line in candidate.splitlines():
@@ -44,11 +49,11 @@ def candidate_key(candidate):
             symbol = clean
             break
 
-    # Aynı coin için tek cooldown anahtarı.
-    return hashlib.sha256(symbol.encode()).hexdigest(), symbol
+    key = hashlib.sha256(symbol.encode()).hexdigest()
+    return key, symbol
 
 
-def should_send(conn, candidate):
+def should_send_candidate(conn, candidate):
     key, symbol = candidate_key(candidate)
     now = time.time()
 
@@ -81,6 +86,31 @@ def should_send(conn, candidate):
     return True
 
 
+def heartbeat_due(conn):
+    now = time.time()
+
+    row = conn.execute(
+        "SELECT value FROM system_state WHERE key = 'heartbeat'"
+    ).fetchone()
+
+    if row is not None:
+        if now - row[0] < HEARTBEAT_SECONDS:
+            return False
+
+    conn.execute(
+        """
+        INSERT INTO system_state(key, value)
+        VALUES ('heartbeat', ?)
+        ON CONFLICT(key)
+        DO UPDATE SET value = excluded.value
+        """,
+        (now,)
+    )
+
+    conn.commit()
+    return True
+
+
 def main():
     result = subprocess.run(
         [sys.executable, "-u", "main.py", "--once"],
@@ -95,7 +125,8 @@ def main():
 
     if result.returncode != 0:
         send_telegram(
-            "⚠️ BtcTurk Momentum Scanner hata verdi.\n"
+            "⚠️ BtcTurk Momentum Scanner ERROR\n\n"
+            f"Scanner cloud taraması başarısız.\n"
             f"Exit code: {result.returncode}"
         )
         raise SystemExit(result.returncode)
@@ -141,11 +172,31 @@ def main():
     conn = init_db()
 
     try:
+        sent_count = 0
+
         for candidate in candidates:
-            if should_send(conn, candidate):
+            if should_send_candidate(conn, candidate):
                 send_telegram(
-                    "🚨 BtcTurk MOMENTUM ALERT\n\n" + candidate
+                    "🚨 BtcTurk MOMENTUM CANDIDATE\n\n"
+                    + candidate
+                    + "\n\n"
+                    "⚠️ Scanner alert only — entry quality "
+                    "and current price should still be checked."
                 )
+                sent_count += 1
+
+        if not candidates and heartbeat_due(conn):
+            send_telegram(
+                "💓 BtcTurk Momentum Scanner ACTIVE\n\n"
+                "Cloud taraması başarılı.\n"
+                "ACTION CANDIDATE bulunamadı.\n"
+                "Scanner çalışmaya devam ediyor."
+            )
+
+        print(
+            f"Candidates found: {len(candidates)} | "
+            f"Telegram alerts sent: {sent_count}"
+        )
 
     finally:
         conn.close()
