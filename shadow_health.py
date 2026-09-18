@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from statistics import median
 import time
+
+from notifier import alert_text
 import urllib.parse
 import urllib.request
 
@@ -123,6 +125,34 @@ class ShadowReporter:
             except Exception:
                 log.exception('shadow_alert_dedup_write_failed key=%s',key)
         return sent
+
+    def momentum_alerts(self,results,now=None):
+        """Send deduplicated heuristic WATCH/ACTION alerts without claiming ML validation."""
+        now=now or time.time()
+        actions=sorted((r for r in results if r.get('stage')=='ACTION'),
+                       key=lambda r:r.get('score',0),reverse=True)
+        watches=sorted((r for r in results
+                        if r.get('stage')=='WATCH'
+                        and (r.get('early_watch_evidence') or r.get('rapidly_forming'))),
+                       key=lambda r:r.get('score',0),reverse=True)
+        # ACTION takes priority. Limit each scan to avoid Telegram floods.
+        selected=(actions[:3] if actions else watches[:3])
+        for result in selected:
+            stage=result['stage']
+            symbol=result['symbol']
+            cooldown=1800 if stage=='ACTION' else 900
+            key=f'momentum:{stage}:{symbol}'
+            try:
+                last=float(self.store.metadata(f'alert:{key}',0))
+            except Exception:
+                last=0
+            if last and now-last<cooldown:
+                continue
+            prefix=('🔥 MOMENTUM ACTION (heuristic, not ML-validated)\n'
+                    if stage=='ACTION' else
+                    '🟡 EARLY MOMENTUM WATCH (heuristic, not ML-validated)\n')
+            if self.send(prefix+alert_text(result)):
+                self.store.set_metadata(f'alert:{key}',now)
 
     def after_scan(self,metrics,now=None):
         now=now or metrics['timestamp']
