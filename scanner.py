@@ -132,6 +132,9 @@ def main():
     logging.basicConfig(level=logging.INFO,handlers=[handler])
     cfg=load_config(args.config)
     data_dir=Path(args.data_dir)
+    # Railway/persistent volumes may be mounted at an empty path. Ensure the
+    # configured data directory exists before SQLite/StateManager open files.
+    data_dir.mkdir(parents=True, exist_ok=True)
     db_path=data_dir/'shadow.sqlite3'
     candidate_path=data_dir/'model_candidate.joblib'
     production_path=data_dir/'model_production.joblib'
