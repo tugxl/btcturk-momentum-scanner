@@ -18,10 +18,10 @@ def observation(t, score, price=100, volume=1, rs=1, comparable=True):
 
 
 def result(score=72, kind='NONE'):
-    return dict(symbol='TESTTRY',score=score,price=103,metrics=dict(r15=1,r60=3,r240=4,volume_accel=2,rs=2),
+    return dict(symbol='TESTTRY',score=score,base_score=score,price=103,metrics=dict(r5=.5,r15=1,r60=3,r240=4,volume_accel=2,rs=2),
                 structure=dict(kind=kind,setup='100' if kind!='NONE' else None,level=100),
                 candle_timestamp=900,confidence=1,book=dict(spread=.1,depth=100000),fomo=[],
-                gates=['no fresh breakout/retest'] if kind=='NONE' else [],eligible=False)
+                gates=[],safety_gates=[],action_blockers=['breakout confirmation'],eligible=False)
 
 
 class HistoryTests(unittest.TestCase):
@@ -75,26 +75,29 @@ class HistoryTests(unittest.TestCase):
     def test_early_watch_two_confirmations(self):
         h=compare(observation(900,72,volume=2,rs=2),[observation(600,64)],Config())
         r=apply_stages(result(),h,Config())
-        self.assertEqual(r['stage'],'EARLY WATCH')
+        self.assertEqual(r['stage'],'WATCH')
         self.assertEqual(len(r['early_watch_evidence']),3)
         self.assertFalse(r['eligible'])
 
     def test_structure_is_only_one_confirmation(self):
         h=compare(observation(900,72),[],Config())
-        self.assertEqual(apply_stages(result(kind='BREAKOUT'),h,Config())['stage'],'NONE')
+        self.assertEqual(apply_stages(result(kind='BREAKOUT'),h,Config())['stage'],'WATCH')
 
-    def test_watch_keeps_all_quality_filters(self):
+    def test_only_safety_filters_block_watch(self):
         h=compare(observation(900,72,volume=2,rs=2),[observation(600,64)],Config())
-        for gate in ['liquidity/spread','FOMO / TOO LATE','incomplete market data','momentum confirmation missing','ticker aged during scan']:
+        for gate in ['liquidity/spread safety','ticker aged during scan']:
             r=result()
-            r['gates'].append(gate)
+            r['safety_gates'].append(gate)
             self.assertFalse(apply_stages(r,h,Config())['early_watch'])
+        r=result()
+        r['action_blockers'].extend(['breakout confirmation','volume acceleration'])
+        self.assertTrue(apply_stages(r,h,Config())['early_watch'])
 
     def test_action_stage_preserves_eligibility(self):
         r=result(85,'BREAKOUT')
         r['eligible']=True
         h=compare(observation(900,85),[],Config())
-        self.assertEqual(apply_stages(r,h,Config())['stage'],'ACTION CANDIDATE')
+        self.assertEqual(apply_stages(r,h,Config())['stage'],'ACTION')
 
     def test_persist_restart_and_retention(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -125,7 +128,7 @@ class HistoryTests(unittest.TestCase):
             self.assertTrue(s.record(r,70))
             self.assertFalse(s.record_watch(r,cfg,1400))
             self.assertFalse(s.record(r,70))
-            r.update(score=63,eligible=False,early_watch=False,stage='NONE')
+            r.update(score=40,eligible=False,early_watch=False,stage='NONE')
             s.record_watch(r,cfg,1500)
             r.update(score=72,early_watch=True,stage='EARLY WATCH')
             self.assertFalse(s.record_watch(r,cfg,1600))

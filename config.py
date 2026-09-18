@@ -6,7 +6,7 @@ import math
 
 @dataclass
 class Config:
-    scan_interval: float = 60
+    scan_interval: float = 180
     request_interval: float = .35
     timeout: float = 15
     retries: int = 3
@@ -21,9 +21,13 @@ class Config:
     max_4h_pct: float = 15
     max_extension_pct: float = 5
     max_breakout_extension_pct: float = 4
-    early_watch_threshold: float = 70
-    watch_reset_threshold: float = 65
+    early_watch_threshold: float = 55
+    watch_reset_threshold: float = 48
     watch_cooldown_seconds: float = 900
+    action_cooldown_seconds: float = 1800
+    summary_interval_seconds: float = 3600
+    notify_score_jump: float = 7
+    score_velocity_max_bonus: float = 8
     score_rise_5m: float = 5
     score_rise_15m: float = 10
     volume_trend_min: float = .2
@@ -31,7 +35,9 @@ class Config:
     history_tolerance_seconds: float = 180
     history_max_gap_seconds: float = 600
     history_retention_days: int = 7
-    weights: dict = field(default_factory=lambda: dict(momentum=20, volume=20, relative_strength=20, structure=15, liquidity=15, early=10))
+    weights: dict = field(default_factory=lambda: dict(momentum=22, volume=18, trend=13, rsi=7,
+                                                       breakout=10, volatility=7, orderbook=10,
+                                                       relative_strength=8, early=5))
 
     def __post_init__(self):
         for key, value in vars(self).items():
@@ -42,9 +48,9 @@ class Config:
                 raise ValueError(f'{key} must be an integer')
         if self.history_hours < 5 or not 60 <= self.alert_threshold <= 100 or self.reset_threshold >= self.alert_threshold:
             raise ValueError('Require history_hours >= 5 and reset < alert threshold (60..100)')
-        expected = {'momentum', 'volume', 'relative_strength', 'structure', 'liquidity', 'early'}
-        if not 70 <= self.early_watch_threshold <= self.alert_threshold or self.alert_threshold < 80 or self.watch_reset_threshold >= self.early_watch_threshold:
-            raise ValueError('Require 70 <= early watch <= action (at least 80), and watch reset below early watch')
+        expected = {'momentum', 'volume', 'trend', 'rsi', 'breakout', 'volatility', 'orderbook', 'relative_strength', 'early'}
+        if not 40 <= self.early_watch_threshold < self.alert_threshold or self.alert_threshold < 70 or self.watch_reset_threshold >= self.early_watch_threshold:
+            raise ValueError('Require 40 <= watch < action (at least 70), and watch reset below watch')
         if set(self.weights) != expected or any(not math.isfinite(v) or v < 0 for v in self.weights.values()) or sum(self.weights.values()) <= 0:
             raise ValueError('Invalid weights')
 
@@ -53,4 +59,14 @@ def load_config(path='config.yaml'):
     if not Path(path).exists():
         return Config()
     import yaml
-    return Config(**(yaml.safe_load(Path(path).read_text(encoding='utf-8')) or {}))
+    data=yaml.safe_load(Path(path).read_text(encoding='utf-8')) or {}
+    legacy={'momentum','volume','relative_strength','structure','liquidity','early'}
+    if set(data.get('weights',{})) == legacy:
+        data['weights']=Config().weights
+        if data.get('early_watch_threshold') == 70:
+            data['early_watch_threshold']=55
+        if data.get('watch_reset_threshold') == 65:
+            data['watch_reset_threshold']=48
+        if data.get('scan_interval') == 60:
+            data['scan_interval']=180
+    return Config(**data)

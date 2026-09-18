@@ -5,11 +5,14 @@ import math
 
 def snapshot(result, timestamp):
     m = result['metrics']
-    return dict(timestamp=timestamp, score=result['score'], price=result['price'],
-                r15=m.get('r15'), r60=m.get('r60'), volume_accel=m.get('volume_accel'),
+    safety = result.get('safety_gates')
+    if safety is None:
+        safety = [g for g in result.get('gates',[]) if any(word in g for word in ('liquidity','stale','aged','unavailable'))]
+    return dict(timestamp=timestamp, score=result.get('base_score',result['score']), final_score=result['score'], price=result['price'],
+                r5=m.get('r5'), r15=m.get('r15'), r60=m.get('r60'), volume_accel=m.get('volume_accel'),
                 rs=m.get('rs'), structure=result['structure']['kind'],
                 candle_timestamp=result.get('candle_timestamp'),
-                comparable=result['confidence'] == 1 and not any('stale' in g or 'aged' in g or 'unavailable' in g for g in result['gates']))
+                comparable=result['confidence'] >= .75 and not safety)
 
 
 def compare(current, history, cfg):
@@ -86,8 +89,10 @@ def compare(current, history, cfg):
 
 def apply_stages(result, history, cfg):
     result['history']=history
-    # Watch can precede a structure event; every other existing gate remains.
-    quality = not [g for g in result['gates'] if g != 'no fresh breakout/retest']
+    safety = result.get('safety_gates')
+    if safety is None:
+        safety = [g for g in result.get('gates',[]) if any(word in g for word in ('liquidity','stale','aged','unavailable'))]
+    quality = not safety
     evidence = []
     for key,label in [('score_rising','score rising'),('volume_rising','volume acceleration rising'),('rs_rising','BTC relative strength rising')]:
         if history[key]:
@@ -97,9 +102,20 @@ def apply_stages(result, history, cfg):
     elif result['structure']['kind'] == 'RETEST':
         evidence.append('first healthy breakout retest')
     result['early_watch_evidence']=evidence
+    velocity = max(0., history.get('score_delta_5m') or 0.)*.35 + max(0., history.get('score_delta_15m') or 0.)*.15
+    result['score_velocity_bonus'] = round(min(cfg.score_velocity_max_bonus, velocity),1)
+    result['score'] = round(min(100., result.get('base_score',result['score']) + result['score_velocity_bonus']),1)
     result['rapidly_forming']=bool(quality and history['rapidly_forming'])
-    result['early_watch']=bool(quality and result['score'] >= cfg.early_watch_threshold and len(evidence)>=2)
-    result['stage']='ACTION CANDIDATE' if result['eligible'] else ('EARLY WATCH' if result['early_watch'] else 'NONE')
+    result['eligible']=bool(quality and result['score'] >= cfg.alert_threshold)
+    result['early_watch']=bool(quality and not result['eligible'] and result['score'] >= cfg.early_watch_threshold)
+    result['stage']='ACTION' if result['eligible'] else ('WATCH' if result['early_watch'] else 'NONE')
+    blockers = [b for b in result.get('action_blockers',[]) if not b.startswith('score needs')]
+    if not result['eligible']:
+        gap=max(0.,cfg.alert_threshold-result['score'])
+        if gap:
+            blockers.insert(0,f'score needs +{gap:.1f}')
+    result['action_blockers']=blockers
+    result['missing_condition']=(result.get('safety_gates') or blockers or [None])[0]
     return result
 
 
@@ -108,7 +124,7 @@ def update_history(state, results, timestamp, cfg, universe=None):
     with state.db:
         seen={r['symbol'] for r in results}
         for symbol in set(universe or [])-seen:
-            unavailable=dict(timestamp=timestamp,score=None,price=None,r15=None,r60=None,volume_accel=None,
+            unavailable=dict(timestamp=timestamp,score=None,final_score=None,price=None,r5=None,r15=None,r60=None,volume_accel=None,
                              rs=None,structure='UNAVAILABLE',candle_timestamp=None,comparable=False)
             state.db.execute('INSERT OR REPLACE INTO score_history VALUES (?,?,?)',
                              (symbol,timestamp,json.dumps(unavailable)))
@@ -117,6 +133,7 @@ def update_history(state, results, timestamp, cfg, universe=None):
                                   (result['symbol'],timestamp-1800,timestamp)).fetchall()
             current=snapshot(result,timestamp)
             apply_stages(result,compare(current,[json.loads(r[0]) for r in rows],cfg),cfg)
+            current['final_score']=result['score']
             state.db.execute('INSERT OR REPLACE INTO score_history VALUES (?,?,?)',
                              (result['symbol'],timestamp,json.dumps(current,allow_nan=False)))
         state.db.execute('DELETE FROM score_history WHERE timestamp<?',(timestamp-cfg.history_retention_days*86400,))

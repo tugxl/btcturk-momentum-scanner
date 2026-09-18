@@ -1,4 +1,4 @@
-scan_interval: 60
+scan_interval: 180
 request_interval: 0.35
 timeout: 15
 retries: 3
@@ -7,9 +7,13 @@ history_hours: 24
 top: 20
 alert_threshold: 80
 reset_threshold: 70
-early_watch_threshold: 70
-watch_reset_threshold: 65
+early_watch_threshold: 55
+watch_reset_threshold: 48
 watch_cooldown_seconds: 900
+action_cooldown_seconds: 1800
+summary_interval_seconds: 3600
+notify_score_jump: 7
+score_velocity_max_bonus: 8
 score_rise_5m: 5
 score_rise_15m: 10
 volume_trend_min: 0.2
@@ -24,9 +28,12 @@ max_4h_pct: 15
 max_extension_pct: 5
 max_breakout_extension_pct: 4
 weights:
-  momentum: 20
-  volume: 20
-  relative_strength: 20
-  structure: 15
-  liquidity: 15
-  early: 10
+  momentum: 22
+  volume: 18
+  trend: 13
+  rsi: 7
+  breakout: 10
+  volatility: 7
+  orderbook: 10
+  relative_strength: 8
+  early: 5

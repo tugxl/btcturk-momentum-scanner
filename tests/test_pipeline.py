@@ -1,7 +1,9 @@
 """Deterministic public-response fixtures; never represented as live prices."""
 import io
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError
 from btcturk_client import BtcTurkClient
@@ -34,8 +36,8 @@ class PipelineTests(unittest.TestCase):
         with patch('market_data.time.time',return_value=NOW):
             rows=MarketData(FixtureClient(),cfg).scan()
         self.assertEqual({r[0] for r in rows},{'BTCTRY','RAYTRY'})
-        results=[evaluate(s,p,c,b,k,cfg,e) for s,p,c,b,k,e in rows]
-        self.assertTrue(all(r['confidence']==1 for r in results))
+        results=[evaluate(s,p,c,b,k,cfg,e,minute_candles=m,btc_minutes=bm) for s,p,c,m,b,bm,k,e in rows]
+        self.assertTrue(all(r['confidence']>=.9 for r in results))
         self.assertTrue(all(not r['eligible'] for r in results))
 
     def test_candle_outage_preserves_other_pair(self):
@@ -68,7 +70,17 @@ class PipelineTests(unittest.TestCase):
 
     def test_example_configuration(self):
         cfg=load_config('config.example.yaml')
-        self.assertEqual(cfg.weights['momentum'],20)
+        self.assertEqual(cfg.weights['momentum'],22)
+
+    def test_legacy_config_is_migrated_to_v2_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'config.yaml'
+            path.write_text('scan_interval: 60\nearly_watch_threshold: 70\nwatch_reset_threshold: 65\nweights:\n  momentum: 20\n  volume: 20\n  relative_strength: 20\n  structure: 15\n  liquidity: 15\n  early: 10\n')
+            cfg=load_config(path)
+        self.assertEqual(cfg.early_watch_threshold,55)
+        self.assertEqual(cfg.watch_reset_threshold,48)
+        self.assertEqual(cfg.scan_interval,180)
+        self.assertEqual(set(cfg.weights),{'momentum','volume','trend','rsi','breakout','volatility','orderbook','relative_strength','early'})
 
 
 if __name__=='__main__':

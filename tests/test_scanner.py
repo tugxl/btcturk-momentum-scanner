@@ -7,6 +7,7 @@ from unittest.mock import patch
 from config import Config, load_config
 from indicators import Candle, metrics, parse_candles
 from momentum_engine import anti_fomo, evaluate, structure
+from score_history import apply_stages, compare, snapshot
 from orderbook import analyze_book
 from positions import load_positions, position_status
 from relative_strength import relative_strength
@@ -87,20 +88,25 @@ class MomentumTests(unittest.TestCase):
         self.assertEqual(r['score'],0)
         self.assertEqual(r['confidence'],0)
 
-    def test_high_score_and_fomo_override(self):
+    def test_high_score_and_chase_penalty(self):
         c=bars()
         c[-1]=Candle(c[-1].t,100,103,100,103,300)
-        good=dict(r5=1,r15=1.5,r30=2,r60=3,r240=4,volume_ratio=3,volume_accel=2.5,extension=1,spike=2,drawdown=0)
+        good=dict(r1=.3,r5=1,r15=1.8,r30=2.5,r60=3,r240=4,volume_ratio=2.5,volume_accel=2,
+                  relative_volume=3,trade_count_accel=2,extension=1,spike=2,drawdown=0,
+                  price_vs_ema9=.8,price_vs_ema21=1.5,ema9_slope=.8,ema21_slope=.5,
+                  rsi=62,rsi_delta=6,atr_pct=1.5,atr_expansion=1.5,breakout_distance=.1,
+                  local_high=103,distance_local_high=0,ema9=102,ema21=101,vwap=102)
         book=dict(spread=.01,depth=1000000,imbalance=.5)
-        with patch('momentum_engine.metrics',side_effect=[good,dict(r60=-1)]):
+        benchmark=dict(r15=-.2,r30=-.3,r60=-1)
+        with patch('momentum_engine.metrics',side_effect=[good,benchmark]):
             r=evaluate('TESTTRY',103,c,bars(),book,Config())
-        self.assertGreaterEqual(r['score'],90)
-        self.assertTrue(r['eligible'])
-        self.assertAlmostEqual(sum(r['components'].values()),r['score'],delta=.1)
-        with patch('momentum_engine.metrics',side_effect=[{**good,'r60':12},dict(r60=-1)]):
-            r=evaluate('TESTTRY',103,c,bars(),book,Config())
-        self.assertFalse(r['eligible'])
-        self.assertTrue(r['fomo'])
+        self.assertGreaterEqual(r['score'],80)
+        self.assertEqual(apply_stages(r,compare(snapshot(r,900),[],Config()),Config())['stage'],'ACTION')
+        self.assertAlmostEqual(sum(r['components'].values())-sum(p[1] for p in r['penalties']),r['base_score'],delta=.2)
+        with patch('momentum_engine.metrics',side_effect=[{**good,'r60':12},benchmark]):
+            late=evaluate('TESTTRY',103,c,bars(),book,Config())
+        self.assertTrue(late['fomo'])
+        self.assertLess(late['score'],r['score'])
 
     def test_benchmark_alignment(self):
         c=bars()
@@ -108,7 +114,7 @@ class MomentumTests(unittest.TestCase):
         self.assertIsNone(r['metrics']['rs'])
 
     def test_thresholds(self):
-        self.assertEqual([signal_level(n) for n in [59,60,70,80,90]],['IGNORE','WATCH','SETUP FORMING','STRONG EARLY MOMENTUM','EXCEPTIONAL'])
+        self.assertEqual([signal_level(n) for n in [54,55,70,80,90]],['NONE','WATCH','WATCH','ACTION','ACTION'])
 
 
 class StateTests(unittest.TestCase):
