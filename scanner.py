@@ -132,9 +132,12 @@ def main():
     logging.basicConfig(level=logging.INFO,handlers=[handler])
     cfg=load_config(args.config)
     data_dir=Path(args.data_dir)
-    # Railway/persistent volumes may be mounted at an empty path. Ensure the
-    # configured data directory exists before SQLite/StateManager open files.
-    data_dir.mkdir(parents=True, exist_ok=True)
+    # Railway mounts the volume at the configured path. The mount itself must
+    # already exist and be writable; create only local/non-mounted directories.
+    if not data_dir.exists():
+        data_dir.mkdir(parents=True, exist_ok=True)
+    if not os.access(data_dir, os.W_OK):
+        raise RuntimeError(f'V3 data directory is not writable: {data_dir}')
     db_path=data_dir/'shadow.sqlite3'
     candidate_path=data_dir/'model_candidate.joblib'
     production_path=data_dir/'model_production.joblib'
