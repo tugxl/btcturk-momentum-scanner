@@ -95,6 +95,12 @@ def evaluate(symbol, price, candles, btc, book, cfg, errors=None):
             zones.append(high)
     zones = zones[:2]
     rr = (zones[0]-price)/(price-stop) if zones and stop and stop < price else None
+        # Trade-quality gate: strong momentum alone is not enough.
+    # Reject setups with no meaningful upside to nearby resistance.
+    if rr is None:
+        gates.append('R/R unavailable')
+    elif rr < 1.5:
+        gates.append(f'poor R/R ({rr:.2f} < 1.50)')
     return dict(symbol=symbol, price=price, score=score, metrics=m, structure=s, book=book, fomo=reasons,
                 candle_timestamp=candles[-1].t if candles else None,
                 components=components, penalties=penalties, confidence=confidence, gates=gates,
