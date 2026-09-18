@@ -136,12 +136,21 @@ class OpportunityStore:
             'SELECT DISTINCT timestamp FROM feature_snapshots WHERE timestamp>=? ORDER BY timestamp',(window_start,)).fetchall()]
         gaps=[b-a for a,b in zip(timestamps,timestamps[1:])]
         feature_rows=self.db.execute('SELECT features FROM feature_snapshots WHERE timestamp>=?',(window_start,)).fetchall()
+        # Gate on features required for a trainable short-horizon observation.
+        # Optional fields (for example trade-count acceleration and score velocity)
+        # may legitimately be absent during warm-up and must not fail the dataset.
+        critical_features=('r5','r15','r30','r60','volume_ratio','volume_accel',
+                           'price_vs_ema9','price_vs_ema21','rsi','atr_pct',
+                           'spread','imbalance','depth','score')
         values=missing=0
+        trainable_rows=0
         for row in feature_rows:
-            for value in json.loads(row['features']).values():
-                if isinstance(value,(int,float)) or value is None:
-                    values += 1
-                    missing += int(value is None)
+            features=json.loads(row['features'])
+            row_values=[features.get(key) for key in critical_features]
+            values += len(row_values)
+            row_missing=sum(value is None for value in row_values)
+            missing += row_missing
+            trainable_rows += int(row_missing==0)
         eligible=self.db.execute('SELECT COUNT(*) n FROM feature_snapshots WHERE timestamp<=?',(now-150*60,)).fetchone()['n']
         labelled=self.db.execute('''SELECT COUNT(*) n FROM forward_labels l JOIN feature_snapshots f ON f.id=l.snapshot_id
             WHERE f.timestamp<=? AND l.labels NOT LIKE '%"status": "UNAVAILABLE"%' ''',(now-150*60,)).fetchone()['n']
@@ -153,6 +162,7 @@ class OpportunityStore:
         unavailable=self.dataset_stats()['unavailable_labels']
         return dict(duplicate_timestamps=duplicates,invalid_prices=invalid_prices,
                     max_timestamp_gap=max(gaps,default=0),feature_nan_rate=missing/values if values else 0,
+                    trainable_feature_rows=trainable_rows,total_feature_rows=len(feature_rows),
                     label_completion_rate=labelled/eligible if eligible else 1.,missing_bars=unavailable+bar_gaps,
                     stale_order_books=sum(r['stale_order_books'] for r in self.health_rows(now-86400)),
                     raw_bars_past_retention=old_bars,expected_interval=expected_interval)
