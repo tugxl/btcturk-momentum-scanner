@@ -132,7 +132,7 @@ class ShadowReporter:
             self.alert('collection','DATA COLLECTION FAILURE\n'+(metrics.get('error') or 'unknown error'),now)
         elif quality['status']=='FAIL':
             self.alert('quality','DATA COLLECTION FAILURE\nDATA QUALITY: FAIL\n'
-                       f"NaN rate: {quality['feature_nan_rate']:.1%}; missing bars: {quality['missing_bars']}; "
+                       f"Critical NaN rate: {quality['feature_nan_rate']:.1%}; trainable rows: {quality['trainable_feature_rows']}/{quality['total_feature_rows']}; missing bars: {quality['missing_bars']}; "
                        f"stale books: {quality['stale_order_books']}",now)
         consecutive=int(self.store.metadata('consecutive_api_failures',0))
         consecutive=consecutive+1 if metrics['api_errors'] else 0
