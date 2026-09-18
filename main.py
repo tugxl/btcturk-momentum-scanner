@@ -46,9 +46,34 @@ def main():
             try:
                 positions = load_positions(args.positions)
                 rows = [evaluate(s,p,c,b,k,cfg,e) for s,p,c,b,k,e in market.scan()]
-                observed_at=time.time()
-                update_history(state,rows,observed_at,cfg,market.universe)
-                held = {p['symbol'] for p in positions}
+observed_at=time.time()
+update_history(state,rows,observed_at,cfg,market.universe)
+
+# Confirmation gate:
+# A high raw momentum score is not enough for an ACTION CANDIDATE.
+# Require usable history and evidence that momentum is still strengthening.
+for r in rows:
+    trend = r.get('trend')
+    score_delta = r.get('score_delta')
+
+    history_ready = (
+        score_delta is not None
+        and trend not in (None, 'FLAT', 'FLAT (warming up)')
+    )
+
+    momentum_confirmed = trend in ('RISING', 'RISING FAST')
+
+    if r.get('eligible') and not history_ready:
+        r['eligible'] = False
+        r.setdefault('gates', []).append('history not ready')
+
+    elif r.get('eligible') and not momentum_confirmed:
+        r['eligible'] = False
+        r.setdefault('gates', []).append(
+            f'momentum not confirmed ({trend})'
+        )
+
+held = {p['symbol'] for p in positions}
                 rows.sort(key=lambda r:(r['symbol'] in held, r['eligible'], r['early_watch'], r['rapidly_forming'], not bool(r['fomo']),r['score']), reverse=True)
                 statuses = [position_status(p,next((r for r in rows if r['symbol']==p['symbol']),None)) for p in positions]
                 if args.json:
