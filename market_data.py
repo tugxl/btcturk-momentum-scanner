@@ -26,9 +26,9 @@ class MarketData:
         except Exception as exc:
             log.warning('minute_candles_unavailable symbol=%s error=%s',symbol,exc)
             minutes, bars = [], []
-        if not bars:
-            payload = self.client.get('candles', {**params, 'resolution': 5})
-            bars = parse_candles(payload, boundary, resolution=5, target_resolution=5)
+        # Do not issue a second native-5m request when the 1m series is sparse.
+        # Sparse pairs are not suitable for the short-horizon predictive dataset;
+        # a fallback request roughly doubles scan cost while hiding that data gap.
         if bars:
             self.candle_cache[symbol] = (boundary, (bars, minutes))
         return bars, minutes
@@ -72,7 +72,12 @@ class MarketData:
                 errors.append('candles unavailable')
                 log.warning('candles_unavailable symbol=%s error=%s', symbol, exc)
             try:
-                payload = self.client.get('book', dict(pairSymbol=symbol, limit=100))
+                # Order-book features are useful only when a contiguous candle history exists.
+                # Skipping books for sparse/inactive pairs cuts request volume without losing
+                # trainable observations. Cache valid books across one neighbouring cycle.
+                if not bars:
+                    raise ValueError('book skipped: insufficient candle history')
+                payload = self.client.get('book', dict(pairSymbol=symbol, limit=100), ttl=max(300, self.config.scan_interval*1.5))
                 stamp = float(payload['data']['timestamp'])/1000
                 if not -60 <= time.time()-stamp <= 180:
                     raise ValueError('stale book')
