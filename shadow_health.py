@@ -127,32 +127,38 @@ class ShadowReporter:
         return sent
 
     def momentum_alerts(self,results,now=None):
-        """Send deduplicated heuristic WATCH/ACTION alerts without claiming ML validation."""
+        """Send one ranked top-10 heuristic momentum digest per hour."""
         now=now or time.time()
-        actions=sorted((r for r in results if r.get('stage')=='ACTION'),
-                       key=lambda r:r.get('score',0),reverse=True)
-        watches=sorted((r for r in results
-                        if r.get('stage')=='WATCH'
-                        and (r.get('early_watch_evidence') or r.get('rapidly_forming'))),
-                       key=lambda r:r.get('score',0),reverse=True)
-        # ACTION takes priority. Limit each scan to avoid Telegram floods.
-        selected=(actions[:3] if actions else watches[:3])
-        for result in selected:
-            stage=result['stage']
-            symbol=result['symbol']
-            cooldown=1800 if stage=='ACTION' else 900
-            key=f'momentum:{stage}:{symbol}'
-            try:
-                last=float(self.store.metadata(f'alert:{key}',0))
-            except Exception:
-                last=0
-            if last and now-last<cooldown:
-                continue
-            prefix=('🔥 MOMENTUM ACTION (heuristic, not ML-validated)\n'
-                    if stage=='ACTION' else
-                    '🟡 EARLY MOMENTUM WATCH (heuristic, not ML-validated)\n')
-            if self.send(prefix+alert_text(result)):
-                self.store.set_metadata(f'alert:{key}',now)
+        hour_bucket=int(now//3600)
+        if str(self.store.metadata('momentum_digest_hour',''))==str(hour_bucket):
+            return False
+
+        candidates=sorted(
+            (r for r in results
+             if r.get('stage') in ('ACTION','WATCH')
+             and not r.get('safety_gates')),
+            key=lambda r:r.get('score',0),reverse=True)[:10]
+        if not candidates:
+            return False
+
+        lines=['📊 HOURLY MOMENTUM — TOP 10',
+               'Heuristic ranking; not ML-validated.']
+        for i,result in enumerate(candidates,1):
+            m=result.get('metrics') or {}
+            lines.append(
+                f"{i}. {result['symbol'].removesuffix('TRY')} | "
+                f"{result.get('stage','WATCH')} | score {result.get('score',0):.1f} | "
+                f"{result['price']:.8g} TRY | "
+                f"5m {m.get('r5'):+.2f}% | 15m {m.get('r15'):+.2f}%"
+                if m.get('r5') is not None and m.get('r15') is not None else
+                f"{i}. {result['symbol'].removesuffix('TRY')} | "
+                f"{result.get('stage','WATCH')} | score {result.get('score',0):.1f} | "
+                f"{result['price']:.8g} TRY"
+            )
+        if self.send('\n'.join(lines)):
+            self.store.set_metadata('momentum_digest_hour',hour_bucket)
+            return True
+        return False
 
     def after_scan(self,metrics,now=None):
         now=now or metrics['timestamp']
