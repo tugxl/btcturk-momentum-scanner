@@ -172,18 +172,19 @@ def main():
     conn = init_db()
 
     try:
+        # One Telegram digest per workflow run. The workflow itself runs hourly,
+        # so users receive at most one ranked message per hour instead of one
+        # notification per candidate.
+        selected = candidates[:10]
         sent_count = 0
-
-        for candidate in candidates:
-            if should_send_candidate(conn, candidate):
-                send_telegram(
-                    "🚨 BtcTurk MOMENTUM CANDIDATE\n\n"
-                    + candidate
-                    + "\n\n"
-                    "⚠️ Scanner alert only — entry quality "
-                    "and current price should still be checked."
-                )
-                sent_count += 1
+        if selected:
+            body = ["🔥 BtcTurk Hacim & Sıkışma Kırılımı — SAATLİK TOP 10", ""]
+            for index, candidate in enumerate(selected, 1):
+                body.append(f"{index}. {candidate}")
+                body.append("")
+            body.append("⚠️ Scanner sıralamasıdır; işlem öncesi güncel fiyat ve risk kontrolü gerekir.")
+            if send_telegram("\n".join(body)):
+                sent_count = len(selected)
 
         if not candidates and heartbeat_due(conn):
             send_telegram(
